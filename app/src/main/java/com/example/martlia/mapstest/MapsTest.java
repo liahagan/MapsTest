@@ -5,6 +5,13 @@ import android.os.Bundle;
 import android.support.v4.app.FragmentActivity;
 import android.util.Log;
 import android.widget.Toast;
+import android.Manifest;
+import android.content.pm.PackageManager;
+import android.location.Location;
+import android.support.annotation.NonNull;
+import android.support.v4.app.ActivityCompat;
+import android.support.v4.content.ContextCompat;
+import android.support.v7.app.AppCompatActivity;
 
 import com.google.android.gms.maps.CameraUpdateFactory;
 import com.google.android.gms.maps.GoogleMap;
@@ -17,6 +24,9 @@ import com.google.android.gms.maps.model.LatLngBounds;
 import com.google.android.gms.maps.model.PatternItem;
 import com.google.android.gms.maps.model.Polyline;
 import com.google.android.gms.maps.model.PolylineOptions;
+import com.google.android.gms.maps.GoogleMap.OnMyLocationButtonClickListener;
+import com.google.android.gms.maps.GoogleMap.OnMyLocationClickListener;
+
 import com.google.maps.android.data.Feature;
 import com.google.maps.android.data.kml.KmlContainer;
 import com.google.maps.android.data.kml.KmlLayer;
@@ -33,7 +43,12 @@ import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 
-public class MapsTest extends FragmentActivity implements OnMapReadyCallback{
+public class MapsTest extends AppCompatActivity
+        implements
+            OnMyLocationButtonClickListener,
+            OnMyLocationClickListener,
+            OnMapReadyCallback,
+            ActivityCompat.OnRequestPermissionsResultCallback{
 
     private static final int COLOR_GREEN_ARGB = 0xff388E3C;
     private static final int COLOR_BLUE_ARGB = 0xffF9A825;
@@ -41,8 +56,11 @@ public class MapsTest extends FragmentActivity implements OnMapReadyCallback{
     private static final int PATTERN_GAP_LENGTH_PX = 20;
     private static final PatternItem GAP = new Gap(PATTERN_GAP_LENGTH_PX);
     private static final PatternItem DOT = new Dot();
+    private static final int LOCATION_PERMISSION_REQUEST_CODE = 1;
 
     private GoogleMap mMap;
+    private HashMap<String, LatLng> centers;
+    private boolean mPermissionDenied = false;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -68,28 +86,20 @@ public class MapsTest extends FragmentActivity implements OnMapReadyCallback{
     public void onMapReady(GoogleMap googleMap) {
         mMap = googleMap;
 
-        // Not using this part, because everything is in KML
-        /*HashMap<String, LatLng[]> pools = coordinates();
-        Polyline pl;
-
-        for (String pool_name: pools.keySet()) {
-            pl = mMap.addPolyline(new PolylineOptions()
-                    .clickable(true)
-                    .add(
-                            pools.get(pool_name)[0],
-                            pools.get(pool_name)[1],
-                            pools.get(pool_name)[2]));
-            pl.setTag(pool_name);
-        }*/
+        centers = new HashMap<String, LatLng>();
 
         //Fetch data from KML file and add it to the map
-        retrieveFileFromResource();
+        processKml();
+
+        mMap.setOnMyLocationButtonClickListener(this);
+        mMap.setOnMyLocationClickListener(this);
+        enableMyLocation();
 
         //mMap.moveCamera(CameraUpdateFactory.newLatLngZoom(new LatLng(62.9796377911109, 8.74903160512098), 10));
 
     }
 
-    private void retrieveFileFromResource() {
+    private void processKml() {
         try {
             KmlLayer kmlLayer = new KmlLayer(mMap, R.raw.map, this);
             kmlLayer.addLayerToMap();
@@ -99,16 +109,56 @@ public class MapsTest extends FragmentActivity implements OnMapReadyCallback{
                 @Override
                 public void onFeatureClick(Feature feature) {
                     Toast.makeText(MapsTest.this,
-                            "Feature clicked: " + feature.getId(),
+                            feature.getProperty("name"),
                             Toast.LENGTH_SHORT).show();
                 }
             });
+
+            KmlContainer container = kmlLayer.getContainers().iterator().next();
+            container = container.getContainers().iterator().next();
+            for (KmlPlacemark placemark : container.getPlacemarks()){
+                KmlPolygon polygon = (KmlPolygon) placemark.getGeometry();
+                double lat_sum = 0;
+                double lng_sum = 0;
+                int count = 0;
+                for (LatLng latlng : polygon.getOuterBoundaryCoordinates()){
+                    lat_sum += latlng.latitude;
+                    lng_sum += latlng.longitude;
+                    count++;
+                }
+                centers.put(placemark.getProperty("name"), new LatLng(lat_sum / count, lng_sum / count));
+            }
+
             moveCameraToKml(kmlLayer);
 
         } catch (IOException e) {
             e.printStackTrace();
         } catch (XmlPullParserException e) {
             e.printStackTrace();
+        }
+    }
+
+    public void accessContainers(Iterable<KmlContainer> containers) {
+        for (KmlContainer container : containers ) {
+
+            if (container.hasContainers()) {
+                accessContainers(container.getContainers());
+            }
+        }
+    }
+
+    /**
+     * Enables the My Location layer if the fine location permission has been granted.
+     */
+    private void enableMyLocation() {
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
+                != PackageManager.PERMISSION_GRANTED) {
+            // Permission to access the location is missing.
+            PermissionUtils.requestPermission(this, LOCATION_PERMISSION_REQUEST_CODE,
+                    Manifest.permission.ACCESS_FINE_LOCATION, true);
+        } else if (mMap != null) {
+            // Access to the location has been granted to the app.
+            mMap.setMyLocationEnabled(true);
         }
     }
 
@@ -132,50 +182,52 @@ public class MapsTest extends FragmentActivity implements OnMapReadyCallback{
         mMap.moveCamera(CameraUpdateFactory.newLatLngBounds(builder.build(), width, height, 1));
     }
 
-    /*
     @Override
-    public void onPolylineClick(Polyline polyline) {
-        // Flip from solid stroke to dotted stroke pattern.
-        if (polyline.getColor() == COLOR_BLACK_ARGB) {
-            polyline.setColor(COLOR_GREEN_ARGB);
-        } else {
-            polyline.setColor(COLOR_BLACK_ARGB);
-        }
-
-        Toast.makeText(this, polyline.getTag().toString(),
-                Toast.LENGTH_SHORT).show();
-    }*/
-
-
-    public HashMap<String, LatLng[]> coordinates() {
-        // zone;pool;beg_lat;beg_lon;mid_lat;mid_lon;end_lat;end_lon
-
-        String csvFile = "coordinates.csv";
-        String line = "";
-        String cvsSplitBy = ";";
-        HashMap<String, LatLng[]> pools = new HashMap<String, LatLng[]>();
-
-        AssetManager am = this.getAssets();
-
-        try {
-            InputStream is = am.open(csvFile);
-            BufferedReader br = new BufferedReader(new InputStreamReader(is));
-
-            //Skipping the first line
-            line = br.readLine();
-
-            while ((line = br.readLine()) != null) {
-                String[] pool = line.split(cvsSplitBy);
-                pools.put(pool[1],new LatLng[]{
-                        new LatLng(Double.parseDouble(pool[2]), Double.parseDouble(pool[3])),
-                        new LatLng(Double.parseDouble(pool[4]), Double.parseDouble(pool[5])),
-                        new LatLng(Double.parseDouble(pool[6]), Double.parseDouble(pool[7]))});
-            }
-
-        } catch (IOException e) {
-            e.printStackTrace();
-        }
-
-        return pools;
+    public boolean onMyLocationButtonClick() {
+        Toast.makeText(this, "MyLocation button clicked", Toast.LENGTH_SHORT).show();
+        // Return false so that we don't consume the event and the default behavior still occurs
+        // (the camera animates to the user's current position).
+        return false;
     }
+
+    @Override
+    public void onMyLocationClick(@NonNull Location location) {
+        Toast.makeText(this, "Current location:\n" + location, Toast.LENGTH_LONG).show();
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions,
+                                           @NonNull int[] grantResults) {
+        if (requestCode != LOCATION_PERMISSION_REQUEST_CODE) {
+            return;
+        }
+
+        if (PermissionUtils.isPermissionGranted(permissions, grantResults,
+                Manifest.permission.ACCESS_FINE_LOCATION)) {
+            // Enable the my location layer if the permission has been granted.
+            enableMyLocation();
+        } else {
+            // Display the missing permission error dialog when the fragments resume.
+            mPermissionDenied = true;
+        }
+    }
+
+    @Override
+    protected void onResumeFragments() {
+        super.onResumeFragments();
+        if (mPermissionDenied) {
+            // Permission was not granted, display error dialog.
+            showMissingPermissionError();
+            mPermissionDenied = false;
+        }
+    }
+
+    /**
+     * Displays a dialog with error message explaining that the location permission is missing.
+     */
+    private void showMissingPermissionError() {
+        PermissionUtils.PermissionDeniedDialog
+                .newInstance(true).show(getSupportFragmentManager(), "dialog");
+    }
+
 }
